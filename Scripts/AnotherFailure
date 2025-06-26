@@ -1,0 +1,206 @@
+import ast
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import IsolationForest
+import pickle
+import matplotlib.pyplot as plt
+import csv
+
+
+def clean_csv(file_path):
+    # Read the file as text
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+
+    # Filter out lines that contain 'array'
+    cleaned_lines = [line for line in lines if 'array' not in line]
+
+    # Write the cleaned lines back to a new file
+    cleaned_file_path = file_path.replace('.csv', '_cleaned.csv')
+    with open(cleaned_file_path, 'w') as file:
+        file.writelines(cleaned_lines)
+
+    return cleaned_file_path
+
+
+def parse_data(cell):
+    """
+    Safely parses a string containing numpy-style array representations
+    into actual numpy arrays.
+    """
+    try:
+        if isinstance(cell, str):
+            # Remove any unwanted characters like ' ' or newline
+            cell = cell.strip()
+            # Convert the string representation into a Python object
+            parsed = ast.literal_eval(cell)
+            if isinstance(parsed, list):
+                # Convert any lists to numpy arrays
+                return np.array(parsed)
+            else:
+                return np.array([parsed])  # In case it's not a list but a single value
+        else:
+            return np.array([cell])  # In case it's not a string
+    except (ValueError, SyntaxError) as e:
+        print(f"Error parsing cell: {cell}\n{e}")
+        return None
+
+
+def load_data(deviation_file, rate_of_change_file, normalized_file):
+    """
+    Loads data from a CSV file where each row is a video with nested
+    arrays for left/right eye data, and combines them into a feature matrix.
+    """
+    # Try to read the CSV and handle rows with inconsistent columns
+    def safe_read_csv(file_path):
+        try:
+            return pd.read_csv(file_path, delimiter=',', error_bad_lines=False, warn_bad_lines=True, quoting=csv.QUOTE_NONE)
+        except Exception as e:
+            print(f"Error reading file {file_path}: {e}")
+            return pd.DataFrame()
+
+    # Read each of the files
+    deviation_df = safe_read_csv(deviation_file)
+    rate_df = safe_read_csv(rate_of_change_file)
+    normalized_df = safe_read_csv(normalized_file)
+
+    # Clean up and parse the data
+    deviation_df['data'] = deviation_df.iloc[:, -1].apply(parse_data)
+    rate_df['data'] = rate_df.iloc[:, -1].apply(parse_data)
+    normalized_df['data'] = normalized_df.iloc[:, -1].apply(parse_data)
+
+    # Initialize lists to hold data
+    deviation_data = []
+    rate_of_change_data = []
+    normalized_data = []
+
+    # Process deviation data
+    for index, row in deviation_df.iterrows():
+        video = row['data']
+        if video is not None and len(video) > 0:
+            # Ensure video contains at least 2 elements (left and right)
+            if len(video) == 1:
+                left = right = video[0]  # Duplicate if only one value is present
+            else:
+                left, right = video[0], video[1]  # Otherwise, unpack the first two elements
+            deviation_data.extend(left)
+            deviation_data.extend(right)
+
+    # Process rate of change data
+    for index, row in rate_df.iterrows():
+        video = row['data']
+        if video is not None and len(video) > 0:
+            # Ensure video contains at least 2 elements (left and right)
+            if len(video) == 1:
+                left = right = video[0]  # Duplicate if only one value is present
+            else:
+                left, right = video[0], video[1]  # Otherwise, unpack the first two elements
+            rate_of_change_data.extend(left)
+            rate_of_change_data.extend(right)
+
+    # Process normalized data
+    for index, row in normalized_df.iterrows():
+        video = row['data']
+        if video is not None and len(video) > 0:
+            # Ensure video contains at least 2 elements (left and right)
+            if len(video) == 1:
+                left = right = video[0]  # Duplicate if only one value is present
+            else:
+                left, right = video[0], video[1]  # Otherwise, unpack the first two elements
+            normalized_data.extend(left)
+            normalized_data.extend(right)
+
+    # Convert lists to NumPy arrays and combine into feature matrix
+    if deviation_data and rate_of_change_data and normalized_data:
+        features = np.column_stack([np.array(deviation_data), np.array(rate_of_change_data), np.array(normalized_data)])
+    else:
+        features = np.array([])
+
+    return features
+
+
+def train_anomaly_model(features, model_path="anomaly_model.pkl", contamination=0.05):
+    """
+    Trains an Isolation Forest model and saves it to a file.
+    """
+    if features.shape[0] > 0:
+        model = IsolationForest(contamination=contamination, random_state=42)
+        model.fit(features)
+
+        with open(model_path, "wb") as f:
+            pickle.dump(model, f)
+
+        print("Anomaly detection model trained and saved to", model_path)
+    else:
+        print("Error: No data to train model.")
+
+
+def detect_anomalies(features, model_path="anomaly_model.pkl"):
+    """
+    Loads a pre-trained Isolation Forest model and detects anomalies in the given data.
+    """
+    try:
+        with open(model_path, "rb") as f:
+            model = pickle.load(f)
+    except FileNotFoundError:
+        print("Error: Model file not found.")
+        return None
+
+    predictions = model.predict(features)
+    return predictions
+
+
+def visualize_anomalies(features, anomaly_predictions):
+    """
+    Visualizes the anomaly detection results.
+    """
+    plt.figure(figsize=(10, 6))
+
+    for i, label in enumerate(["Deviation", "Rate of Change", "Normalized"]):
+        plt.scatter(range(len(features)), features[:, i], label=label, alpha=0.5)
+        plt.scatter(
+            np.where(anomaly_predictions == -1)[0],
+            features[anomaly_predictions == -1, i],
+            color="red",
+            s=10,
+            label=f"Anomalies ({label})" if i == 0 else None,
+            zorder=10
+        )
+
+    plt.xlabel("Sample Index")
+    plt.ylabel("Feature Value")
+    plt.title("Anomaly Detection Results")
+    plt.legend()
+    plt.show()
+
+
+if __name__ == "__main__":
+
+    # Clean the CSV files
+    deviation_file = clean_csv("/Users/nickhunnell/Desktop/Machine Learning/deviation_data.csv")
+    rate_of_change_file = clean_csv("/Users/nickhunnell/Desktop/Machine Learning/rate_change_data.csv")
+    normalized_file = clean_csv("/Users/nickhunnell/Desktop/Machine Learning/normalized_data.csv")
+
+    # Load the data
+    features = load_data(deviation_file, rate_of_change_file, normalized_file)
+
+    if features is not None and features.shape[0] > 0:
+        print('Features loaded successfully with shape:', features.shape)
+
+        # Train the anomaly detection model
+        train_anomaly_model(features)
+
+        # Detect anomalies
+        anomaly_predictions = detect_anomalies(features)
+
+        if anomaly_predictions is not None:
+            # Find and print indices of anomalous samples
+            anomalous_indices = np.where(anomaly_predictions == -1)[0]
+            print(f"Anomalous samples detected at indices: {anomalous_indices}")
+
+            # Visualize the results
+            visualize_anomalies(features, anomaly_predictions)
+        else:
+            print("No anomaly predictions available.")
+    else:
+        print("No valid data to process.")
