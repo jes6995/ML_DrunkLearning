@@ -1,4 +1,4 @@
-# DU(a)I
+# Computer Vision Impairment Detection Model
 
 ## How to Run:
 
